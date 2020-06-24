@@ -93,7 +93,7 @@ display_top_tabs($tab_array);
 				</thead>
 				<tbody>
 <?php
-	exec("/sbin/ifconfig {$rwlif} list scan 2>&1", $states, $ret);
+	exec("/sbin/ifconfig -v {$rwlif} list scan 2>&1", $states, $ret);
 	/* Skip Header */
 	array_shift($states);
 
