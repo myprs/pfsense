@@ -517,7 +517,12 @@ function get_queue_bandwidth($obj) {
 
 	switch ($match[1]) {
 		case '%':
-			$objbw = ($bw / 100) * get_queue_bandwidth($obj->GetParent());
+			if (method_exists($obj, 'GetParent')) {
+				$getobjbw = get_queue_bandwidth($obj->GetParent());
+			} else {
+				$getobjbw = $obj->bandwidth;
+			}
+			$objbw = ($bw / 100) * $getobjbw;
 			break;
 		default:
 			$objbw = $bw * get_bandwidthtype_scale($scale);
@@ -1578,7 +1583,8 @@ class priq_queue {
 				if (($data['newname'] == $q->GetQname()) && ($data['name'] != $data['newname'])) { 
 					$input_errors[] = gettext("A queue with the same name already exists.");
 				}
-				if (($data['priority'] == $q->GetQpriority()) && ($data['name'] != $q->GetQname())) { 
+				if (in_array($parent->GetScheduler(), array('CBQ', 'FAIRQ','PRIQ')) &&
+				    ($data['priority'] == $q->GetQpriority()) && ($data['name'] != $q->GetQname())) { 
 					$input_errors[] = sprintf(gettext("The priority %d is already used by queue %s."),
 							$data['priority'], $q->GetQname());
 				}
@@ -4246,7 +4252,7 @@ EOD;
 
 		// If there are no bandwidths defined, make a blank one for convenience
 		if (empty($bandwidth)) {
-			$bandwidth = array(0 => array('bw' => '', 'bwscale' => 'Kb', 'bwsched' => 'none'));
+			$bandwidth = array(0 => array('bw' => '', 'bwscale' => 'Mb', 'bwsched' => 'none'));
 		}
 
 		if (is_array($bandwidth)) {

@@ -751,10 +751,9 @@ function filter_generate_aliases() {
 				$aliases .= " }\"\n";
 			}
 		} elseif (!empty($ifcfg['descr']) && !empty($ifcfg['if'])) {
-			if ($ifcfg['type6'] == '6rd') {
-				$aliases .= "{$ifcfg['descr']} = \"{ {$ifcfg['if']} {$if}_stf";
-			} else if ($ifcfg['type6'] == '6to4') {
-				$aliases .= "{$ifcfg['descr']} = \"{ {$ifcfg['if']} {$if}_stf";
+			if (($ifcfg['type6'] == '6rd') || ($ifcfg['type6'] == '6to4')) {
+				$aliases .= "{$ifcfg['descr']} = \"{ {$ifcfg['if']} {$if}_stf }\"\n";
+				$aliases .= "{$ifcfg['descr']}_STF = \"{ {$if}_stf";
 			} else {
 				$aliases .= "{$ifcfg['descr']} = \"{ {$ifcfg['if']}";
 
@@ -876,6 +875,7 @@ function filter_generate_gateways() {
 	/* Lookup Gateways to be used in filter rules once */
 	$GatewaysList = return_gateways_array();
 	$GatewayGroupsList = return_gateway_groups_array(true);
+	$GatewaysStatus = return_gateways_status(true);
 
 	if (is_array($GatewaysList)) {
 		foreach ($GatewaysList as $gwname => $gateway) {
@@ -885,7 +885,8 @@ function filter_generate_gateways() {
 			if (!is_ipaddr($gwip)) {
 				$gwip = get_interface_gateway($gateway['friendlyiface']);
 			}
-			if (is_ipaddr($gwip) && !empty($int) && !isset($gateway['force_down'])) {
+			if (is_ipaddr($gwip) && !empty($int) && !isset($gateway['force_down']) &&
+			    (($GatewaysStatus[$gwname]['status'] != 'down') || isset($gateway['action_disable']))) {
 				$route = "route-to ( {$int} {$gwip} )";
 			}
 			if (($route === "") && isset($config['system']['skip_rules_gw_down'])) {
@@ -906,10 +907,25 @@ function filter_generate_gateways() {
 				$foundlb = 0;
 				$routeto = "";
 				$routetomembers = 0;
+				$trigger = "";
+				foreach ($config['gateways']['gateway_group'] as $group) {
+					if ($group['name'] == $gateway) {
+						$trigger = $group['trigger'];
+						break;
+					}
+				}
 				foreach ($members as $idx => $member) {
 					$int = $member['int'];
 					$gatewayip = $member['gwip'];
-					if (($int <> "") && is_ipaddr($gatewayip)) {
+					if (!empty($int) && is_ipaddr($gatewayip) &&
+					    isset($GatewaysList[$member['gw']]) &&
+					    (isset($GatewaysList[$member['gw']]['action_disable']) ||
+					    (!isset($GatewaysList[$member['gw']]['force_down']) &&
+					    !stristr($GatewaysStatus[$member['gw']]['status'], 'down') && 
+					    ((!stristr($GatewaysStatus[$member['gw']]['status'], 'loss') &&
+					    !stristr($trigger, 'loss')) ||
+					    (!stristr($GatewaysStatus[$member['gw']]['status'], 'delay') &&
+					    !stristr($trigger, 'latency')))))) {
 						if ($g['debug']) {
 							log_error(sprintf(gettext('Setting up route with %1$s on %2$s'), $gatewayip, $int));
 						}
@@ -1965,7 +1981,13 @@ function filter_nat_rules_generate() {
 
 			$sn = "";
 			$sn1 = "";
-			$target = alias_expand($rule['external']);
+			if (is_ipaddr($rule['external'])) {
+				$target = $rule['external'];
+			} else {
+				$tmprule = array();
+				$tmprule['external']['network'] = $rule['external'];
+				$target = filter_generate_address($tmprule, 'external');
+			}
 			if (!$target) {
 				$natrules .= "# Unresolvable alias {$rule['target']}\n";
 				continue;               /* unresolvable alias */
@@ -1989,6 +2011,9 @@ function filter_nat_rules_generate() {
 				continue;
 			}
 
+			if (!is_ipaddr($srcaddr) && !is_subnet($srcaddr)) {
+				$srcaddr = explode(' ', $srcaddr)[1];
+			}
 			$tmp = explode('/', $srcaddr);
 			$srcip = $tmp[0];
 			if (!empty($tmp[1]) && is_numeric($tmp[1])) {
@@ -1996,9 +2021,15 @@ function filter_nat_rules_generate() {
 				$sn1 = "/{$sn}";
 			}
 
-			$natif = $FilterIflist[$natif]['if'];
-			$nat_if_list = array();
+			$natifname = $FilterIflist[$natif]['if'];
+			if (is_ipaddrv6($tmp[0]) && (($FilterIflist[$natif]['type6'] == '6rd') ||
+			    ($FilterIflist[$natif]['type6'] == '6to4'))) {
+				$natif = strtolower($FilterIflist[$natif]['descr']) . "_stf";
+			} else {
+				$natif = $natifname;
+			}
 
+			$nat_if_list = array();
 			if (isset($rule['nobinat'])) {
 				$natrules .= "no binat on {$natif} from {$srcaddr} to {$dstaddr}\n";
 			} else {
@@ -2008,7 +2039,7 @@ function filter_nat_rules_generate() {
 				 */
 				if ((isset($config['system']['enablebinatreflection']) || $rule['natreflection'] == "enable") &&
 				    ($rule['natreflection'] != "disable")) {
-					$nat_if_list = filter_get_reflection_interfaces($natif);
+					$nat_if_list = filter_get_reflection_interfaces($natifname);
 				}
 
 				$natrules .= "binat on {$natif} from {$srcaddr} to {$dstaddr} -> {$target}{$sn1}\n";
@@ -2047,7 +2078,11 @@ function filter_nat_rules_generate() {
 			$srcaddr = trim($srcaddr);
 			$dstaddr = trim($dstaddr);
 
-			$natif = $FilterIflist[$natif]['descr'];
+			if (($FilterIflist[$natif]['type6'] == '6rd') || ($FilterIflist[$natif]['type6'] == '6to4')) {
+				$natif = $FilterIflist[$natif]['descr'] . "_STF";
+			} else {
+				$natif = $FilterIflist[$natif]['descr'];
+			}
 
 			/* Do not form an invalid NPt rule.
 			 * See https://redmine.pfsense.org/issues/8575 */
